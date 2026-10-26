@@ -1,0 +1,106 @@
+name: release
+
+# Cross-compiles the CLI for every platform we support and publishes the binaries
+# as a GitHub Release, so users download and run — no Go toolchain, no build.
+#
+#   git tag v0.2.0 && git push origin v0.2.0      # or: Actions -> release -> Run
+#
+# The binaries are built from the SEALED source (internal/zlt/sealed_gen.go), so no
+# sensitive literal is readable with `strings`. Local `make build-enc` additionally
+# applies garble (control-flow obfuscation); that needs a newer toolchain than CI
+# guarantees, so it stays a maintainer step rather than a release requirement.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: go test
+        run: go test ./...
+      - name: python reference still parses
+        run: python3 -m py_compile python/zltx16_unlock.py
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: linux,   goarch: arm   }   # armv7: the CPE SoC itself
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -eu
+          ver="${GITHUB_REF_NAME:-dev}"
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          out="dist/zltx16-${GOOS}-${GOARCH}${ext}"
+          mkdir -p dist
+          # -s -w strips symbols/DWARF, -buildid= makes the output reproducible.
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -buildid= -X main.version=${ver}" \
+            -o "$out" ./cmd/zltx16
+          # The release contract: none of the sealed literals may be readable.
+          for lit in 'cgi-bin/http.cgi' 'busybox telnetd' 'NO_AUTH' 'superadmin' 'telnetd' 'RequestCmd'; do
+            if strings -a "$out" | grep -qF -- "$lit"; then
+              echo "LEAK: $lit present in $out" >&2
+              exit 1
+            fi
+          done
+          echo "built $out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zltx16-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        run: |
+          cd dist && ls -l && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          # Re-running on the same tag replaces the assets instead of failing.
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "zltx16 $TAG" --generate-notes
+          gh release upload "$TAG" dist/* --clobber
