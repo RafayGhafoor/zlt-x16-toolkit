@@ -28,6 +28,7 @@ access to the target's HTTP port.
 | `at` | AT commands via the vendor's serialised `/bin/atcmd` (writes guarded) |
 | `nv` | Read an NV item by number or EFS path (read only) |
 | `level` | Show/set `account_level` - the flag that gates the web AT console |
+| `features` | Inventory the `*_SW` switches; enable the safe set, refuse the harmful one |
 
 Why this works, and the full request/response detail: [docs/protocol.md](docs/protocol.md).
 

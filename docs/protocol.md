@@ -505,3 +505,66 @@ login. The durable forms are (a) the shim, which re-asserts it per request, or
 
 That last point is worth repeating: **the root shell does not need level 1.** The
 level only buys you the restricted *web* commands. `unlock` works either way.
+
+## What is still "disabled", and what to do about it
+
+The unlock gives root, and the front shim gives `account_level=1`. Neither of
+those *enables* features. Features are plain `mdlcfg` parameters, mostly named
+`*_SW` / `*_SWITCH` / `*_ENABLE`. `zltx16 features` inventories them against a
+built-in policy table and classifies each one.
+
+```
+safe    no security or durability cost
+risky   works, but costs attack surface, flash wear, or operator control
+never   turning it ON is the harmful direction - refused even by name
+```
+
+Applied on this unit (safe class, persisted with `mdlcfg -c`):
+
+| Key | Effect |
+|---|---|
+| `SYS_ADB_SWITCH` | adbd over USB |
+| `USR_DDNS_SW` | DDNS page |
+| `USR_NW_AIRPLANE_MODE_ENABLE` | airplane mode in the UI |
+| `USR_DATA_ROAMING_SW` | data while roaming |
+
+Left alone, deliberately:
+
+| Key | Why not |
+|---|---|
+| `SYS_TELNET_SWITCH`, `USR_IDU_TELNET_SWITCH` | the vendor telnet on 9876 is plaintext and its password is the shipped `admin/admin` - a second guessable service |
+| `USR_FWT_UPNP_SW` | UPnP/IGD: any LAN host could open ports |
+| `SYS_MDL_LOG_SW` | continuous writes to the same ubifs volume as `/etc` |
+| `USR_APN_SW_1..3` | extra PDP slots; re-reads the profile set on apply |
+| `SYS_LOCK_*`, `USR_TR069_*`, `*_WEB_LOGIN_IP_FROM_WAN_SW` | **class never.** Enabling these locks the SIM/PLMN, hands the device to the operator's ACS, or publishes the web UI on the WAN |
+
+```sh
+./dist/zltx16 features -host 192.168.3.1 -shell 192.168.3.1:2233
+./dist/zltx16 features -host 192.168.3.1 -shell 192.168.3.1:2233 -apply safe
+./dist/zltx16 features -host 192.168.3.1 -shell 192.168.3.1:2233 -enable USR_FWT_UPNP_SW
+```
+
+### 5G / NR is off — and that is not a bug to fix
+
+`AT+C5GREG: 0,0` and NV `modem/mmode/nr5g_disable_mode = 1`: the modem is pinned
+to LTE. The device is provisioned for NR (band policy `[1,8,40,41,78]`,
+`mode_pref = 0x50` = LTE+NR5G) but the disable flag is set.
+
+This is the *only* remaining "disabled" capability of any consequence, and the
+device repo's own analysis says leaving it is correct:
+
+- `endc_available: 0` — the serving network does not offer EN-DC here;
+- `docs/29` §"Current policy": `nr5g_disable_mode 1` pins the modem to LTE and
+  removes EN-DC add/drop;
+- `docs/44` (scell churn vs band flapping) treats LTE-pinning as the mitigation.
+
+Turning it on would re-introduce the EN-DC churn those pages exist to document,
+for no 5G. If you want to test anyway — the supported lever is the policy
+command, not an NV write:
+
+```sh
+./dist/zltx16 at -write -host 192.168.3.1 -shell 192.168.3.1:2233 \
+  'AT+CSYSSEL="nr5g_disable",0'
+# then watch: ./dist/zltx16 at ... 'AT+C5GREG?'   (expect a non-zero stat when NR is offered)
+# revert:    ./dist/zltx16 at -write ... 'AT+CSYSSEL="nr5g_disable",1'
+```
