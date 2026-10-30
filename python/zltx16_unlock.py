@@ -19,7 +19,7 @@ Usage:
     ./zltx16_unlock.py login    -H 192.168.3.1 -u admin -p admin
     ./zltx16_unlock.py verify   -H 192.168.3.1 --ports 23,22
     ./zltx16_unlock.py unlock   -H 192.168.3.1 -u admin -p admin --confirm
-    ./zltx16_unlock.py unlock   -H 192.168.3.1 -u superadmin -p 83583000 \
+    ./zltx16_unlock.py unlock   -H 192.168.3.1 -u superadmin -p "$SUPER_PWD" \
                                 --dmz 127.0.0.1 --mode telnet --confirm
 
 Requires: Python 3.8+, standard library only.

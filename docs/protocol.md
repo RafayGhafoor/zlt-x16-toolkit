@@ -82,7 +82,7 @@ The firmware ships, identical on every unit of this model:
 | `SYS_SENIOR_LOGIN_NAME` | `root` |
 | `SYS_SENIOR_LOGIN_PWD` | `admin` |
 | `SYS_SUPER_LOGIN_NAME` | `superadmin` |
-| `SYS_SUPER_LOGIN_PWD` | `83583000` |
+| `SYS_SUPER_LOGIN_PWD` | *(per-device; read it off the unit - never commit it)* |
 
 ## Privilege model — the super account is NOT required
 

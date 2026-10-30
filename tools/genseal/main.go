@@ -27,7 +27,6 @@ var literals = map[string]string{
 	"sealedDefaultHost":  "192.168.3.1",
 	"sealedNoAuthMarker": "NO_AUTH",
 	"sealedSuperUser":    "superadmin",
-	"sealedSuperPass":    "83583000",
 	"sealedSeniorUser":   "root",
 	"sealedSeniorPass":   "admin",
 }
@@ -62,7 +61,7 @@ func main() {
 	for _, n := range []string{
 		"sealedCGIPath", "sealedTelnetTmpl", "sealedDefaultUser",
 		"sealedDefaultPass", "sealedDmzHost", "sealedDefaultHost",
-		"sealedNoAuthMarker", "sealedSuperUser", "sealedSuperPass",
+		"sealedNoAuthMarker", "sealedSuperUser",
 		"sealedSeniorUser", "sealedSeniorPass",
 	} {
 		names = append(names, n)

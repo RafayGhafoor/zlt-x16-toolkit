@@ -32,11 +32,40 @@ access to the target's HTTP port.
 
 Why this works, and the full request/response detail: [docs/protocol.md](docs/protocol.md).
 
+> Credentials are **not** shipped in this repository. The factory and super-admin
+> passwords are per-device config values (`SYS_SUPER_LOGIN_PWD` and friends); read
+> them off the unit you are authorised to administer and pass them on the command
+> line or via `$SUPER_PWD`. Committing a live one would hand every unit of this
+> model to whoever reads the repo.
+
 > **The super account is not required.** `admin`/`admin` is sufficient: the DMZ
 > handler is gated on session validity, not on account tier. Evidence and the
 > decompiled authorisation switch are in
 > [docs/protocol.md](docs/protocol.md#privilege-model--the-super-account-is-not-required).
 > `unlock -user ''` tries every shipped account in turn.
+
+## Download a binary (no build needed)
+
+Every [release](https://github.com/RafayGhafoor/zlt-x16-toolkit/releases) ships a
+static binary per platform, plus `SHA256SUMS.txt`:
+
+| Your machine | Download | Run |
+|---|---|---|
+| **Windows** 10/11 (64-bit) | `zltx16-windows-amd64.exe` | `zltx16.exe probe -host 192.168.3.1` |
+| **macOS** Apple silicon | `zltx16-darwin-arm64` | `./zltx16 probe -host 192.168.3.1` |
+| **macOS** Intel | `zltx16-darwin-amd64` | `./zltx16 probe -host 192.168.3.1` |
+| **Linux** x86-64 | `zltx16-linux-amd64` | `./zltx16 probe -host 192.168.3.1` |
+| **Linux** arm64 (Pi, router) | `zltx16-linux-arm64` | `./zltx16 probe -host 192.168.3.1` |
+| **Linux** armv7 (the CPE SoC itself) | `zltx16-linux-arm` | `./zltx16 probe -host 127.0.0.1` |
+
+```sh
+# verify what you downloaded, then run it
+sha256sum -c SHA256SUMS.txt          # macOS: shasum -a 256 -c SHA256SUMS.txt
+chmod +x zltx16-linux-amd64 && ./zltx16-linux-amd64 probe -host 192.168.3.1
+```
+
+The binaries are built from the **sealed** source, so `strings` will not reveal the
+request surface or the payload - the release job fails the build if it can.
 
 ## Install
 
@@ -174,6 +203,34 @@ The Python twin exposes the same four subcommands:
 python3 python/zltx16_unlock.py probe  -H 192.168.3.1
 python3 python/zltx16_unlock.py unlock -H 192.168.3.1 -u admin -p admin --confirm
 ```
+
+## After you unlock: what this is actually for
+
+The unlock is **step zero**, not the destination. It gives you a root shell so the
+device can be provisioned and instrumented. Once this tool has given you a shell,
+the companion repository
+**[zlt-x16-field-tooling](https://github.com/RafayGhafoor/zlt-x16-field-tooling-public)**
+takes over - it deploys the QManager UI, the AT-dialect shim, hardware-offload
+supervision, SmartDNS, a browser call terminal, and the guards that keep them up,
+all through one idempotent command:
+
+```sh
+git clone https://github.com/RafayGhafoor/zlt-x16-field-tooling-public.git
+cd zlt-x16-field-tooling
+./deploy.sh --dry-run     # what it will do
+./deploy.sh               # do it
+```
+
+**Order matters: unlock first (this repo), then deploy (the other one).** The deploy
+step assumes root access, which is exactly what `unlock` provides.
+
+## Help, updates, walkthroughs
+
+- **Telegram** - questions, setup help, firmware notes: <https://t.me/setids>
+- **YouTube** - end-to-end walkthrough: <https://www.youtube.com/watch?v=frmXNgGuJmk>
+- **Issues** - reproducible bugs belong in
+  [Issues](https://github.com/RafayGhafoor/zlt-x16-toolkit/issues); please include
+  `zltx16 probe` output and your OS.
 
 ## Exit codes
 

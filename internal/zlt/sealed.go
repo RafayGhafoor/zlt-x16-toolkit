@@ -27,9 +27,6 @@ var (
 	noAuthMarker string
 	// superUserName is the highest-privilege built-in account.
 	superUserName string
-	// superPass is that account's shipped password. Kept only so the tool can
-	// complete the fallback credential chain; the DMZ handler does not need it.
-	superPass string
 	// seniorUserName / seniorPass are the middle-tier built-in account.
 	seniorUserName string
 	seniorPass     string
@@ -67,7 +64,6 @@ func init() {
 	DefaultHost = seal.Open(sealedDefaultHost, sealedKey)
 	noAuthMarker = seal.Open(sealedNoAuthMarker, sealedKey)
 	superUserName = seal.Open(sealedSuperUser, sealedKey)
-	superPass = seal.Open(sealedSuperPass, sealedKey)
 	seniorUserName = seal.Open(sealedSeniorUser, sealedKey)
 	seniorPass = seal.Open(sealedSeniorPass, sealedKey)
 	telnetTmpl = seal.Open(sealedTelnetTmpl, sealedKey)

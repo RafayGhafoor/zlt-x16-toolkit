@@ -2,6 +2,7 @@ package zlt
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -40,8 +41,18 @@ func redact(s string) string {
 	return s[:1] + strings.Repeat("*", len(s)-1)
 }
 
-// ShippedCredentials returns the factory credential chain in the order it should
-// be tried. Every entry is a published default for this model; none is a secret.
+// SuperPasswordEnv names the environment variable that may carry the per-device
+// super-account password.
+//
+// The super password is deliberately NOT compiled into this tool. The device repo
+// treats it as per-device (see docs/protocol.md), and it is not needed anyway: the
+// DMZ handler is gated on session validity, not on account tier, so the ordinary
+// admin account reaches it. Set SUPER_PWD only if the admin password has been
+// changed and you want the chain to try the super account.
+const SuperPasswordEnv = "SUPER_PWD"
+
+// ShippedCredentials returns the credential chain in the order it should be tried.
+// Published defaults for this model only; no live password is embedded.
 //
 // The first entry is the ordinary web user. It is enough for `unlock`.
 func ShippedCredentials() []Credential {
@@ -55,12 +66,15 @@ func ShippedCredentials() []Credential {
 			Note: "shipped senior account (level 2)",
 		})
 	}
+	// Only offered when the operator supplies it, because it is per-device.
 	if superUserName != "" {
-		out = append(out, Credential{
-			User: superUserName,
-			Pass: superPass,
-			Note: "shipped super account (level 1) - only needed for hidden UI pages",
-		})
+		if pw := os.Getenv(SuperPasswordEnv); pw != "" {
+			out = append(out, Credential{
+				User: superUserName,
+				Pass: pw,
+				Note: "super account from $" + SuperPasswordEnv + " (level 1) - only needed for hidden UI pages",
+			})
+		}
 	}
 	return out
 }
