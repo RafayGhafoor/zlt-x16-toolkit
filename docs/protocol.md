@@ -544,69 +544,42 @@ Left alone, deliberately:
 ./dist/zltx16 features -host 192.168.3.1 -shell 192.168.3.1:2233 -enable USR_FWT_UPNP_SW
 ```
 
-### 5G / NR is off — and that is not a bug to fix
+### 5G / NR: enabled on request, but the network offers none here
 
-`AT+C5GREG: 0,0` and NV `modem/mmode/nr5g_disable_mode = 1`: the modem is pinned
-to LTE. The device is provisioned for NR (band policy `[1,8,40,41,78]`,
-`mode_pref = 0x50` = LTE+NR5G) but the disable flag is set.
+Original state — the modem was pinned to LTE:
 
-This is the *only* remaining "disabled" capability of any consequence, and the
-device repo's own analysis says leaving it is correct:
+```
+AT+C5GREG?                                        +C5GREG: 0,0
+AT+CNMP?                                          +CNMP: 109
+NV modem/mmode/nr5g_disable_mode                  01        (NR disabled)
+AT+CPSI?                                          ... EUTRAN-BAND3
+```
 
-- `endc_available: 0` — the serving network does not offer EN-DC here;
-- `docs/29` §"Current policy": `nr5g_disable_mode 1` pins the modem to LTE and
-  removes EN-DC add/drop;
-- `docs/44` (scell churn vs band flapping) treats LTE-pinning as the mitigation.
-
-Turning it on would re-introduce the EN-DC churn those pages exist to document,
-for no 5G. If you want to test anyway — the supported lever is the policy
-command, not an NV write:
+Flipped with the supported policy command rather than an NV write:
 
 ```sh
-./dist/zltx16 at -write -host 192.168.3.1 -shell 192.168.3.1:2233 \
-  'AT+CSYSSEL="nr5g_disable",0'
-# then watch: ./dist/zltx16 at ... 'AT+C5GREG?'   (expect a non-zero stat when NR is offered)
-# revert:    ./dist/zltx16 at -write ... 'AT+CSYSSEL="nr5g_disable",1'
+./dist/zltx16 at -write -host 192.168.3.1 -shell 192.168.3.1:2233 'AT+CSYSSEL="nr5g_disable",0'
+#   -> OK
 ```
 
-## The DMZ payload replays at boot
+State after — verified across a reboot, so it is durable:
 
-A manual reboot of the unit confirmed this directly:
+| Check | Before | After |
+|---|---|---|
+| `nv .../nr5g_disable_mode` | `01` | `00` (survived reboot) |
+| `AT+CNMP?` | 109 | **2** (automatic, LTE + NR) |
+| `AT+C5GREG?` | `0,0` | `0,0` — still not registered on NR |
+| QManager `nr.state` | inactive | `inactive`, `nr.band` empty |
+| Serving cell | LTE B3 | LTE B5, 10 MHz, RSRP −72 dBm (QMI), SINR 8 |
 
-```
-# before reboot:  tcp :23 LISTEN   busybox telnetd -l /bin/sh          <- original payload
-#                 tcp :2233 LISTEN busybox telnetd -l /bin/sh -p 2233  <- later payload
-# after reboot:   :23 GONE,  :2233 LISTEN busybox telnetd -l /bin/sh -p 2233
-```
+So NR is now permitted by the device; the serving network is not offering an NR
+leg. That matches the device repo's own observation, `endc_available: 0`
+(`docs/44`): there is no EN-DC to add here, which is why that repo pinned LTE in
+the first place. Nothing further can be enabled on the device side — it is a
+network/SIM question.
 
-`/productinfo/tzcfg/iptables/iptables_dmz_function` had been updated to the
-`-p 2233` form, and only *that* payload came back. So the saved DMZ function is
-**re-executed when TZApp rebuilds iptables during boot**. Consequences:
-
-- a provisioned unit keeps its root console across reboots — the payload is
-  persistent, not just a runtime toggle;
-- command mode is persistent too, which is worth remembering before putting
-  anything destructive in that field;
-- it explains why `unlock` sometimes looks like it did nothing: the write was
-  accepted, and the payload only ran at the next boot / firewall rebuild.
-
-To remove it, replace the saved value (write a benign `ip`), or move the artefact
-aside:
+Revert if the LTE-pinning behaviour was wanted (it removes EN-DC add/drop churn):
 
 ```sh
-mv /productinfo/tzcfg/iptables/iptables_dmz_function \
-   /productinfo/tzcfg/iptables/iptables_dmz_function.disabled
+./dist/zltx16 at -write -host 192.168.3.1 -shell 192.168.3.1:2233 'AT+CSYSSEL="nr5g_disable",1'
 ```
-
-### Separate, documented risk: `AT+CFUN=1,1`
-
-The device repo's `docs/05` describes the dialer rebooting the router when AT
-sends fail repeatedly (`Dialer reboot system cause AT send failed more than %d
-times`). `AT+CFUN=1,1` resets the modem and drops the AT channel, so it is a
-plausible way to trip that watchdog — but this has **not** been demonstrated
-here: the reboot observed during this session was triggered manually by the
-operator, so the causal link is unverified. Treat the reboot as a risk, not a
-fact.
-
-`zltx16 at` prints a warning for the commands that can plausibly trip it, and
-`AT+CFUN=4` (RF off) is the safe way to get signal control.
