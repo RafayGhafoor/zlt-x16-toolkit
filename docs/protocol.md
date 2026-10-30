@@ -328,3 +328,92 @@ rate-limited login answers `"success":"true"` *with no session* — treat
 `Authed()` as "AUTH flag or a sessionId is present", never as "success is set".
 Failed logins start a lockout (`buffer:"2"`, `netx_login_time` seconds), so an
 aggressive credential sweep can make a correct password look wrong.
+
+## The modem side: AT, IMEI and NV
+
+`unlock` gets you root. Root is what makes the modem reachable — **nothing here
+touches `/etc/shadow`**, and there is no password to defeat. `/etc/shadow` only
+appeared in this project because dropbear reads root's hash from it for *SSH
+password* login; AT and IMEI have no connection to it.
+
+### How AT is actually reached
+
+There is no AT character device you may open. The SIM8260E is on the same SDX65
+die as the application CPU, so there is no `ttyUSB`/`ttyACM`/pty, and
+`/bin/atcmd_daemon` holds `/dev/smd8` for the whole boot (writing AT) while
+reading indications from `/dev/smd9`. Opening a node behind the daemon's back
+interleaves with its multiplexer, and the dialer's failure path is:
+
+```
+Dialer reboot system cause AT send failed more than %d times
+```
+
+...so a stray write does not fail a command, it **reboots the router**.
+
+The supported path is the vendor's own serialised client, which the daemon
+serialises for you:
+
+```sh
+/bin/atcmd "AT+CGSN"
+# atcmd_receive:
+# 861702085648268
+#
+# OK
+```
+
+Rules that are not optional:
+
+- always `timeout -s KILL` — `atcmd` ignores `SIGTERM` and a plain timeout leaves
+  the shared channel held;
+- never send `AT+CLAC` (never terminates here and wedges `atcmd_daemon` for every
+  client), `AT+CFUN?` or `AT+CSYSSEL=?` (both hang);
+- never `grep -r` over `/usr` or `/tzwww` while doing this — it stalls the box.
+
+Recovery if the channel does wedge, with no reboot and the dialer unaffected:
+
+```sh
+P=$(pgrep -f '^atcmd_daemon$'); kill -9 "$P"; sleep 0.3
+setsid /etc/initscripts/start_atcmd_daemon start
+/bin/atcmd "AT"        # -> OK
+```
+
+### Reading identity (what `info` does)
+
+| Field | Command | This unit |
+|---|---|---|
+| IMEI | `AT+CGSN` (or `AT+SIMEI?`) | `861702085648268` |
+| ICCID | `AT+CICCID` | `89410037251217291419` |
+| IMSI | `AT+CIMI` | `410032100729141` |
+| module serial | `AT+CNVR=2497,0` | hex `4D50…` → `MP06240353BDB0C` |
+
+All four are plain queries. None of them needs an NV tool, a DIAG port or a
+write.
+
+### Writing is where it stops — on purpose
+
+The write primitives exist and this toolkit deliberately does not implement them:
+
+| Command | What it writes |
+|---|---|
+| `AT+SIMEI=0,"…"` / `AT+SPIMEI=0,"…"` | **IMEI** — device identity |
+| `AT+CNVW=<item>,…` | NV by number |
+| `AT+CNV=<path>,<op>,…` with op ≠ 0 | NV by path |
+| `AT+CLCK=` / `AT+CPWD=` | SIM lock / PIN |
+| `AT&F`, `AT+SFUN=` | AT defaults / SIM function control |
+
+`at` enforces this: those are refused outright, policy writes (band list, cell
+lock, PDP, CoPS, CFUN…) need an explicit `-write`, and reads are never blocked.
+The reasoning is the same as in the device repo (`docs/04` hard risk #4, `docs/42`
+§3): an IMEI is identity material, altering it is illegal in most jurisdictions,
+and a mistyped NV write bricks network attach. A device that needs its IMEI
+*restored* should have the value from its own label written with the vendor's
+service tooling, not by a provisioning script.
+
+Useful, allowed, and genuinely what "enable AT commands" means in practice:
+
+```sh
+./dist/zltx16 info -host 192.168.3.1 -shell 192.168.3.1:2233
+./dist/zltx16 at   -host 192.168.3.1 -shell 192.168.3.1:2233 'AT+CSQ' 'AT+CPSI?' 'AT+CEREG?'
+./dist/zltx16 nv   -host 192.168.3.1 -shell 192.168.3.1:2233 2497
+./dist/zltx16 nv   -host 192.168.3.1 -shell 192.168.3.1:2233 -path /nv/item_files/modem/mmode/lte_bandpref
+```

@@ -24,6 +24,9 @@ access to the target's HTTP port.
 | `exec` | Run one command over an already-provisioned root shell |
 | `put` | Upload a file over that shell (chunked base64 - no sftp on the device) |
 | `ssh` | Bootstrap dropbear over that shell; the firmware ships **no** SSH server |
+| `info` | Read-only identity: IMEI, ICCID, IMSI, module serial, firmware |
+| `at` | AT commands via the vendor's serialised `/bin/atcmd` (writes guarded) |
+| `nv` | Read an NV item by number or EFS path (read only) |
 
 Why this works, and the full request/response detail: [docs/protocol.md](docs/protocol.md).
 
@@ -89,6 +92,39 @@ observed on unlocked units, so point `-shell` at whatever answers:
 ./dist/zltx16 verify -host 192.168.3.1                  # probes 23, 2233, 9876, 22
 ./dist/zltx16 exec -host 192.168.3.1 -shell 192.168.3.1:2233 'id; uname -a'
 ./dist/zltx16 put  -host 192.168.3.1 -shell 192.168.3.1:2233 ./dropbear /data/ssh/dropbear
+```
+
+### The modem: AT commands and IMEI
+
+Root is what makes the modem reachable. There is no AT device node to open — the
+modem is on the same die as the CPU and `atcmd_daemon` owns `/dev/smd8` — so the
+toolkit drives the vendor's own serialised client, `/bin/atcmd`, over the root
+shell. **No `/etc/shadow` edit is involved anywhere in this.**
+
+```bash
+./dist/zltx16 info -host 192.168.3.1 -shell 192.168.3.1:2233
+./dist/zltx16 at   -host 192.168.3.1 -shell 192.168.3.1:2233 'AT+CSQ' 'AT+CPSI?'
+./dist/zltx16 nv   -host 192.168.3.1 -shell 192.168.3.1:2233 2497
+```
+
+Every call is wrapped in `timeout -s KILL` because `atcmd` ignores `SIGTERM` and a
+plain timeout leaves the shared AT channel held. `AT+CLAC`, `AT+CFUN?` and
+`AT+CSYSSEL=?` are refused — they wedge `atcmd_daemon` for every client on this
+firmware.
+
+IMO the IMEI surface has one useful direction and one that should not be built:
+
+| | |
+|---|---|
+| **Read** (`AT+CGSN`, `AT+SIMEI?`) | what `info` does |
+| **Write** (`AT+SIMEI=`, `AT+SPIMEI=`) | **refused** — identity material, illegal to alter in most jurisdictions, and a bad value breaks network attach |
+
+Policy writes that are legitimate on your own unit (band list, cell lock, PDP
+profile) need an explicit opt-in:
+
+```bash
+./dist/zltx16 at -write -host 192.168.3.1 -shell 192.168.3.1:2233 \
+  'AT+CSYSSEL="lte_band",1:3:5:28:38:41'
 ```
 
 ### Getting SSH (a second, separate step)
