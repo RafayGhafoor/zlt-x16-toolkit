@@ -136,6 +136,30 @@ func ClassifyAT(cmd string, allowWrites bool) (forbidden bool, needsOptIn bool, 
 	return false, false, ""
 }
 
+// ATHazard returns a warning for commands that are legal but have a side effect
+// worth stating before they are sent.
+//
+// AT+CFUN=1,1 is the sharp one: it resets the modem, which drops the AT channel
+// for tens of seconds, and the dialer counts failed AT sends - its failure path
+// is "Dialer reboot system cause AT send failed more than %d times" (device repo
+// docs/05). So a router reboot is a documented RISK of this command, not
+// something observed here (the reboot seen during testing was manual). Use
+// AT+CFUN=4 (RF off) when that is what you actually want.
+func ATHazard(cmd string) string {
+	up := strings.ToUpper(strings.TrimSpace(cmd))
+	switch {
+	case strings.HasPrefix(up, "AT+CFUN=1,1"):
+		return "resets the modem and drops the AT channel; can trip the dialer's AT-failure watchdog, which reboots the router (documented risk, not reproduced here). Prefer AT+CFUN=4"
+	case strings.HasPrefix(up, "AT+CFUN=7"):
+		return "needs AT+CFUN=6 or a reboot to recover; the device repo says never to send this"
+	case strings.HasPrefix(up, "AT+CRESET"), strings.HasPrefix(up, "AT+CPOF"):
+		return "drops the modem; the reply may arrive before the channel closes"
+	case strings.HasPrefix(up, "AT+CNWSEARCH"), strings.HasPrefix(up, "AT+SPNCELLSCAN"):
+		return "blocking network scan; holds the shared AT channel for up to ~2 min"
+	}
+	return ""
+}
+
 // AT is a modem console built on the injected root shell.
 type AT struct {
 	Shell *Shell

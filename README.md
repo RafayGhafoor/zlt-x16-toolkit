@@ -120,6 +120,15 @@ It is not needed for the root shell or for the AT work above.
 ./dist/zltx16 level -host 192.168.3.1 -shell 192.168.3.1:2233 -set 1 # enable the web AT console
 ```
 
+`AT+CFUN=1,1` is allowed under `-write` but now warns. It resets the modem and
+drops the AT channel, and the device repo's `docs/05` documents the dialer
+rebooting the router when AT sends fail repeatedly — a plausible, but here
+**unverified**, consequence (the reboot seen during testing was manual). Prefer
+`AT+CFUN=4` for RF control.
+
+Separately verified: the saved DMZ payload **re-executes at boot**, so a
+provisioned root console survives reboots.
+
 Every AT call is wrapped in `timeout -s KILL` because `atcmd` ignores `SIGTERM` and a
 plain timeout leaves the shared AT channel held. `AT+CLAC`, `AT+CFUN?` and
 `AT+CSYSSEL=?` are refused — they wedge `atcmd_daemon` for every client on this

@@ -568,3 +568,45 @@ command, not an NV write:
 # then watch: ./dist/zltx16 at ... 'AT+C5GREG?'   (expect a non-zero stat when NR is offered)
 # revert:    ./dist/zltx16 at -write ... 'AT+CSYSSEL="nr5g_disable",1'
 ```
+
+## The DMZ payload replays at boot
+
+A manual reboot of the unit confirmed this directly:
+
+```
+# before reboot:  tcp :23 LISTEN   busybox telnetd -l /bin/sh          <- original payload
+#                 tcp :2233 LISTEN busybox telnetd -l /bin/sh -p 2233  <- later payload
+# after reboot:   :23 GONE,  :2233 LISTEN busybox telnetd -l /bin/sh -p 2233
+```
+
+`/productinfo/tzcfg/iptables/iptables_dmz_function` had been updated to the
+`-p 2233` form, and only *that* payload came back. So the saved DMZ function is
+**re-executed when TZApp rebuilds iptables during boot**. Consequences:
+
+- a provisioned unit keeps its root console across reboots — the payload is
+  persistent, not just a runtime toggle;
+- command mode is persistent too, which is worth remembering before putting
+  anything destructive in that field;
+- it explains why `unlock` sometimes looks like it did nothing: the write was
+  accepted, and the payload only ran at the next boot / firewall rebuild.
+
+To remove it, replace the saved value (write a benign `ip`), or move the artefact
+aside:
+
+```sh
+mv /productinfo/tzcfg/iptables/iptables_dmz_function \
+   /productinfo/tzcfg/iptables/iptables_dmz_function.disabled
+```
+
+### Separate, documented risk: `AT+CFUN=1,1`
+
+The device repo's `docs/05` describes the dialer rebooting the router when AT
+sends fail repeatedly (`Dialer reboot system cause AT send failed more than %d
+times`). `AT+CFUN=1,1` resets the modem and drops the AT channel, so it is a
+plausible way to trip that watchdog — but this has **not** been demonstrated
+here: the reboot observed during this session was triggered manually by the
+operator, so the causal link is unverified. Treat the reboot as a risk, not a
+fact.
+
+`zltx16 at` prints a warning for the commands that can plausibly trip it, and
+`AT+CFUN=4` (RF off) is the safe way to get signal control.

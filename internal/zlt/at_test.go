@@ -119,3 +119,26 @@ func TestExtractNVPayload(t *testing.T) {
 		t.Fatalf("binary item decoded to junk: %q", got)
 	}
 }
+
+// AT+CFUN=1,1 is allowed with -write but must warn: it resets the modem and can
+// trip the dialer's AT-failure watchdog. That reboot path is documented in the
+// device repo, not reproduced here.
+func TestATHazardWarnsOnModemReset(t *testing.T) {
+	cases := map[string]bool{
+		"AT+CFUN=1,1":              true,
+		"AT+CFUN=7":                true,
+		"AT+CRESET":                true,
+		"AT+CPOF":                  true,
+		"AT+CNWSEARCH=\"lte\",120": true,
+		"AT+CGSN":                  false,
+		"AT+CSQ":                   false,
+		"AT+CFUN=4":                false, // RF off is the safe way to do it
+		"AT+CFUN?":                 false,
+	}
+	for cmd, wantWarn := range cases {
+		got := ATHazard(cmd)
+		if (got != "") != wantWarn {
+			t.Errorf("ATHazard(%q) = %q, want warning=%v", cmd, got, wantWarn)
+		}
+	}
+}
