@@ -583,3 +583,137 @@ Revert if the LTE-pinning behaviour was wanted (it removes EN-DC add/drop churn)
 ```sh
 ./dist/zltx16 at -write -host 192.168.3.1 -shell 192.168.3.1:2233 'AT+CSYSSEL="nr5g_disable",1'
 ```
+
+### It is a family, not one bug
+
+`cmd 172` is one instance of a pipeline used by **17 commands**: the POST body is
+written to `/productinfo/tzcfg/iptables/<name>`, `firewalltools` parses it and
+`snprintf`s a rule line from a JSON field, and `system_by_root` runs the result.
+`process_filter` (cmds 21-32, 382-385) writes the body **byte-for-byte**, so any
+field of those files is shell source.
+
+Fields that are interpolated raw (no `inet_aton`, no regex):
+
+| cmd | JSON field | shell template |
+|---|---|---|
+| 172 | `ip` | `--to-destination %s` (the known one) |
+| 22, 24, 25, 32, 384 | `ip` / `destIp` | `-s %s`, `-d %s` |
+| 27 | `mappingIp` | `-j DNAT --to-destination %s` |
+| 31 | `srcIp`, `destIp` | `--src-range %s --dst-range %s` |
+| 385 | `datas[].ip` | `iptables -I parental_forward_mdl_chain -s %s -j DROP` |
+| **198** | `remoteServerAddr` | **`system("tzupdate %s")`** — no validation at all |
+
+None of these call `authority_checkt`; they are session-gated exactly like DMZ,
+so `admin`/`admin` reaches them. `198` (`process_remote_upgrade`) is the cleanest
+independent second path: a plain `system()` with an unvalidated config value.
+
+Of 393 dispatched commands, only **51** open with an `authority_checkt(N)`; the
+rest — including 172, 198, 21-32, 106, 168, 243, 309, 317, 382-385 — are session
+only. Full tables: device repo `docs/raw/scout-injection-sinks.md` and
+`docs/raw/scout-authz-model.md`.
+
+## Where the DMZ payload actually executes (and why the save is not the trigger)
+
+The handler never calls `system()`. `cmd 172 subcmd 6` is a **string generator**,
+and that changes how you have to drive it.
+
+### Two files with the same name
+
+| path | fs | content | lifetime |
+|---|---|---|---|
+| `/productinfo/tzcfg/iptables/iptables_dmz_function` | ubifs | the raw **request JSON** (`cmd`,`subcmd`,`enabled`,`ip`,`sessionId`) | survives reboot; gone only on overwrite or restore-defaults |
+| `/tmp/cmdlib/iptables/iptables_dmz_function` | tmpfs | the **generated `/bin/sh` script** | lost on reboot, regenerated from the JSON |
+
+The persisted JSON is the source of truth. On this unit the generated script
+literally contains the injection:
+
+```sh
+#!/bin/sh
+iptables  -w -t nat -A prerouting_mdl_chain -i rmnet_data0 -d 10.248.36.28 -j DNAT --to-destination 127.0.0.1;busybox telnetd -l /bin/sh -p 2233
+iptables  -w -t nat -A postrouting_mdl_chain -s 192.168.3.1/24 -d 127.0.0.1;busybox telnetd -l /bin/sh -p 2233/32 -j SNAT --to-source 192.168.3.1
+conntrack -F
+```
+
+Executed verbatim by `/etc/tzscript/iptables_config` (lines 195-196):
+
+```sh
+#防火墙没有被关闭
+if [ "${USR_FWT_SW}" != "0" ]; then
+if [ -f "${FIREWALL_SHELL_SCRIPT_DIRECTORY}"/iptables_dmz_function  ]; then
+        "${FIREWALL_SHELL_SCRIPT_DIRECTORY}"/iptables_dmz_function
+fi
+```
+
+Note the gate: **`USR_FWT_SW` is the master firewall switch, and the payload only
+replays while it is non-zero.** `zltx16 features` now classifies it `never` for
+exactly this reason — turning it off would disable packet filtering *and*
+silently remove the root console on the next boot.
+
+### Generating is not executing
+
+```
+POST cmd=172 ─▶ write JSON to /productinfo ─▶ rm /tmp/cmdlib/iptables/* ─▶ generate_rules
+                                                                              │
+                                        /tmp/cmdlib/iptables/iptables_dmz_function (0777)
+                                                                              │
+        (only now) /etc/tzscript/iptables_config runs it ─────────────────────┘
+```
+
+A save can therefore be accepted, produce a perfectly valid rule script, and
+still never execute. Three measured causes of "it did not fire":
+
+1. the applier never ran — the CGI already answered `{"success":true}`;
+2. `generate_rules` bailed: `enabled != 1`, no resolvable WAN interface, or
+   `util_is_telnet_supported() != 0`;
+3. **no WAN IPv4 yet** — the rule needs `-d <wan-ip>`, so a save before the modem
+   dialled produces nothing useful. "Save now, fires later" is normal.
+
+### Deterministic trigger
+
+```sh
+./dist/zltx16 unlock ... -trigger                     # uses a console already reachable
+ssh zlt-x16-root 'sh /etc/tzscript/iptables_config'   # same thing by hand
+```
+
+`-trigger` opens whichever console already exists, runs the applier, then
+re-verifies. Success is reported for the port you **asked for** — a box that
+already had a passwordless telnetd elsewhere no longer yields a false "success",
+that case is a note instead.
+
+### Boot replay is effectively guaranteed
+
+Two independent actors exist: the in-process `generate_rules` call, and the
+`firewalltools` daemon, which re-parses the persisted JSON on every reapply.
+Observed on this unit: the daemon regenerated the script ~60 s after boot, its
+`0x103D` (WAN-up, from `dialer`) message triggered the apply, and the injected
+`telnetd -p 2233` was running 134 s after boot with nobody touching the box. To
+remove the persistence, overwrite the saved value with a benign `ip` (or move the
+artefact aside); killing the daemon is not enough.
+
+### It is a family, not one bug
+
+`cmd 172` is one instance of a pipeline used by **17 commands**: the POST body is
+written to `/productinfo/tzcfg/iptables/<name>`, `firewalltools` parses it and
+`snprintf`s a rule line from a JSON field, and `system_by_root` runs the result.
+`process_filter` (cmds 21-32, 382-385) writes the body **byte-for-byte**, so any
+field of those files is shell source.
+
+Fields interpolated raw (no `inet_aton`, no regex):
+
+| cmd | JSON field | shell template |
+|---|---|---|
+| 172 | `ip` | `--to-destination %s` (the known one) |
+| 22, 24, 25, 32, 384 | `ip` / `destIp` | `-s %s`, `-d %s` |
+| 27 | `mappingIp` | `-j DNAT --to-destination %s` |
+| 31 | `srcIp`, `destIp` | `--src-range %s --dst-range %s` |
+| 385 | `datas[].ip` | `iptables -I parental_forward_mdl_chain -s %s -j DROP` |
+| **198** | `remoteServerAddr` | **`system("tzupdate %s")`** — no validation at all |
+
+None of these call `authority_checkt`; they are session-gated exactly like DMZ,
+so `admin`/`admin` reaches them. `198` (`process_remote_upgrade`) is the cleanest
+independent second path: a plain `system()` with an unvalidated config value.
+
+Of 393 dispatched commands only **51** open with an `authority_checkt(N)`; the
+rest — including 172, 198, 21-32, 106, 168, 243, 309, 317, 382-385 — are session
+only. Full tables live in the device repo at
+`docs/raw/scout-authz-model.md` and `docs/raw/scout-injection-sinks.md`.

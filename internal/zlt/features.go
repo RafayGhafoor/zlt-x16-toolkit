@@ -57,8 +57,15 @@ var FeaturePolicy = map[string]SwitchPolicy{
 		SwitchRisky, "same vendor telnet path, IDU-side gate"},
 
 	// --- works, but not free --------------------------------------------------
+	// NOT UPnP. This is the master firewall switch, and it is load-bearing twice
+	// over: /etc/tzscript/iptables_config only executes the generated
+	// /tmp/cmdlib/iptables/iptables_dmz_function when USR_FWT_SW != 0. Turning it
+	// off disables packet filtering AND silently stops the saved DMZ payload from
+	// replaying at boot, i.e. it removes the root console.
 	"USR_FWT_SW": {
-		SwitchRisky, "UPnP/IGD: any LAN host can open ports on the router"},
+		SwitchNever, "master firewall switch. iptables_config only runs the generated " +
+			"iptables_dmz_function when this is non-zero, so turning it off both disables " +
+			"packet filtering and stops the saved DMZ payload from replaying at boot"},
 	"USR_FWT_UPNP_SW": {
 		SwitchRisky, "UPnP/IGD: same, and it advertises the router on the LAN"},
 	"SYS_MDL_LOG_SW": {

