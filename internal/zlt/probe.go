@@ -69,6 +69,16 @@ func ProbeShell(host string, port int, timeout time.Duration) ShellState {
 
 // looksUnauthenticated decides from a banner whether a login handler is present.
 func looksUnauthenticated(banner string) bool {
+	// An SSH server is not an unauthenticated shell just because it greets you
+	// first. Rejecting this here keeps `verify` from reporting dropbear on 22 as
+	// a root shell, which is the same false positive a plain port scan gives.
+	if strings.HasPrefix(banner, "SSH-") || strings.Contains(banner, "SSH-2.0-") {
+		return false
+	}
+	if strings.Contains(strings.ToUpper(banner), "SSH-") && strings.Contains(banner, "\r\n") &&
+		strings.Contains(strings.SplitN(banner, "\n", 2)[0], "SSH-") {
+		return false
+	}
 	low := strings.ToLower(banner)
 	// Strip telnet IAC negotiation bytes so they don't confuse matching.
 	cleaned := strings.Map(func(r rune) rune {
@@ -89,6 +99,11 @@ func looksUnauthenticated(banner string) bool {
 	}
 	// No prompt at all but the socket is talking: still no auth handler seen.
 	return true
+}
+
+// SSHState reports whether the port speaks SSH rather than a bare shell.
+func IsSSH(banner string) bool {
+	return strings.Contains(banner, "SSH-2.0-") || strings.HasPrefix(banner, "SSH-")
 }
 
 // PortOpen is a plain TCP reachability check.

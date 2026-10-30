@@ -24,6 +24,10 @@ type Client struct {
 	SessionID string
 	// Level is the account tier ("1"/"2"/"3") reported by the device.
 	Level string
+	// CGIPath overrides the CGI entry point. mini_httpd runs every file matching
+	// cgipat=cgi-bin/* as root, so this is useful when a vendor or an unlock
+	// wrapper sits in front of the real handler (see docs/protocol.md).
+	CGIPath string
 }
 
 // NewClient builds a client for the given origin (e.g. "http://192.168.3.1").
@@ -53,26 +57,65 @@ func NewClient(base, lang string, timeout time.Duration, insecure bool) (*Client
 
 // URLFor builds the CGI URL for a command. The device's JS passes cmd, method,
 // sessionId and language as query parameters, and repeats them in the JSON body.
+//
+// `method` here is the *parameter* the device reads out of the query string /
+// body, not the HTTP verb. See Do for the verb.
 func (c *Client) URLFor(cmd int, method string) string {
 	q := url.Values{}
 	q.Set("cmd", fmt.Sprint(cmd))
 	q.Set("method", method)
 	q.Set("sessionId", c.SessionID)
 	q.Set("language", c.lang)
-	return c.base + DefaultCGIPath + "?" + q.Encode()
+	return c.base + c.cgiPath() + "?" + q.Encode()
+}
+
+// cgiPath returns the configured CGI entry point, defaulting to the vendor one.
+func (c *Client) cgiPath() string {
+	if c.CGIPath != "" {
+		return c.CGIPath
+	}
+	return DefaultCGIPath
+}
+
+// MarshalBody encodes a request body the way the device expects it.
+//
+// Do NOT use encoding/json's default: it HTML-escapes <, > and & into
+// \u003c, \u003e and \u0026. The ZLT CGI's hand-rolled JSON reader strips the
+// backslash but does not decode \uXXXX, so a payload such as
+//
+//	127.0.0.1;id > /tmp/x
+//
+// is stored as "id u003e /tmp/x" and the redirection silently disappears. The
+// request still answers {"success":true}, so the failure is invisible unless you
+// read the value back. Cmd=172 subcmd=6 persists exactly that string in
+// mdlcfg TZ_DMZ_DEST_IP and in /productinfo/tzcfg/iptables/iptables_dmz_function.
+func MarshalBody(body any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(body); err != nil {
+		return nil, err
+	}
+	// Encode appends a newline; the CGI is happier without it.
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // Do sends one JSON request and returns the raw response body.
 func (c *Client) Do(cmd int, method string, body any) ([]byte, error) {
 	var payload io.Reader
 	if body != nil {
-		b, err := json.Marshal(body)
+		b, err := MarshalBody(body)
 		if err != nil {
 			return nil, fmt.Errorf("zlt: marshal request: %w", err)
 		}
 		payload = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, c.URLFor(cmd, method), payload)
+	// The HTTP verb is always POST. mini_httpd hands the CGI its body only for
+	// POST; the browser uses XMLHttpRequest POSTs too. A literal HTTP GET with a
+	// body makes the device accept the connection and then never answer, which
+	// presents as a timeout on the token step. `method` is carried in the query
+	// string and the JSON body - that is the device's own convention.
+	req, err := http.NewRequest(http.MethodPost, c.URLFor(cmd, method), payload)
 	if err != nil {
 		return nil, fmt.Errorf("zlt: build request: %w", err)
 	}

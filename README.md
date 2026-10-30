@@ -21,8 +21,17 @@ access to the target's HTTP port.
 | `login` | Verify web credentials and print the privilege tier |
 | `verify` | Check whether a passwordless shell is already exposed (read-only) |
 | `unlock` | Install a passwordless root shell via the device's DMZ handler |
+| `exec` | Run one command over an already-provisioned root shell |
+| `put` | Upload a file over that shell (chunked base64 - no sftp on the device) |
+| `ssh` | Bootstrap dropbear over that shell; the firmware ships **no** SSH server |
 
 Why this works, and the full request/response detail: [docs/protocol.md](docs/protocol.md).
+
+> **The super account is not required.** `admin`/`admin` is sufficient: the DMZ
+> handler is gated on session validity, not on account tier. Evidence and the
+> decompiled authorisation switch are in
+> [docs/protocol.md](docs/protocol.md#privilege-model--the-super-account-is-not-required).
+> `unlock -user ''` tries every shipped account in turn.
 
 ## Install
 
@@ -55,9 +64,16 @@ reference implementation.
 Higher privilege tiers, or the alternate port when 23 is busy:
 
 ```bash
-./dist/zltx16 unlock -host 192.168.3.1 -user superadmin -pass 83583000 --confirm
+# try every shipped account (admin, then root, then superadmin)
+./dist/zltx16 unlock -host 192.168.3.1 -user '' --confirm
+
 ./dist/zltx16 unlock -host 192.168.3.1 --mode telnet-alt --dport 4444 --confirm
 ```
+
+> `-user ''` walks the shipped credential chain. You do not need the super
+> account: the ordinary `admin`/`admin` login is enough, because `cmd:172
+> subcmd:6` is gated on session validity and not on account tier. See
+> [docs/protocol.md](docs/protocol.md#privilege-model--the-super-account-is-not-required).
 
 Run one specific command instead of installing a daemon:
 
@@ -65,6 +81,34 @@ Run one specific command instead of installing a daemon:
 ./dist/zltx16 unlock -host 192.168.3.1 \
   --mode command --cmd 'id > /tmp/.zlt_unlock_marker' --confirm
 ```
+
+Then use the shell you just got. The port is not always 23 — 2233 has been
+observed on unlocked units, so point `-shell` at whatever answers:
+
+```bash
+./dist/zltx16 verify -host 192.168.3.1                  # probes 23, 2233, 9876, 22
+./dist/zltx16 exec -host 192.168.3.1 -shell 192.168.3.1:2233 'id; uname -a'
+./dist/zltx16 put  -host 192.168.3.1 -shell 192.168.3.1:2233 ./dropbear /data/ssh/dropbear
+```
+
+### Getting SSH (a second, separate step)
+
+`unlock` gives you **telnet**, not SSH. The stock image has no SSH server, no
+`sftp-server`, and no package feed. The `ssh` subcommand automates the bootstrap
+that was done by hand on the reference unit:
+
+```bash
+./dist/zltx16 ssh -host 192.168.3.1 -shell 192.168.3.1:2233 \
+  -dropbear ./dropbear -authorized-keys ~/.ssh/id_ed25519.pub
+```
+
+It reuses a dropbear already present at `/data/ssh/dropbear`, generates host keys
+with `dropbearkey`, moves root's home to `/data/root` (dropbear refuses
+`authorized_keys` under a group-writable `$HOME`, and `/home/root` is `0775` on a
+read-only ubifs), writes `/etc/initscripts/start_ssh`, hooks it into
+`StartTZApp`, sets `mdlcfg SYS_SSH_SWITCH=1`, inserts an `iptables ACCEPT` ahead
+of TZApp's `nmap_scan` port-22 DROP, starts it, and confirms tcp/22. Add
+`-dry-run` to see the steps without touching the device.
 
 The Python twin exposes the same four subcommands:
 
@@ -98,9 +142,10 @@ What ends up sealed:
 | CGI path | the request surface |
 | telnet payload template | the injection itself |
 | default username / password | shipped credentials |
+| senior username / password | fallback credential |
 | factory LAN address | default target |
 | `NO_AUTH` marker | protocol internals |
-| `superadmin` account name | privilege escalation target |
+| `superadmin` / its password | last-resort fallback credential |
 
 Verify it yourself:
 

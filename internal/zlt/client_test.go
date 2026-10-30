@@ -235,3 +235,29 @@ func TestUnlockOrchestratorRejectsBadCredentials(t *testing.T) {
 		t.Fatal("expected login failure to abort the flow")
 	}
 }
+
+// Regression: the device only answers POST. A literal HTTP GET with a JSON body
+// is accepted at the TCP level and then never answered, which shows up as a
+// timeout on the cmd=232 token step. `method` is a parameter, not the verb.
+func TestRequestsUsePostVerb(t *testing.T) {
+	var verbs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		verbs = append(verbs, r.Method+" "+r.URL.Query().Get("method"))
+		_, _ = w.Write([]byte(`{"token":"t"}`))
+	}))
+	defer srv.Close()
+
+	cl, err := NewClient(srv.URL, "en", 5e9, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cl.FetchToken(); err != nil {
+		t.Fatalf("FetchToken: %v", err)
+	}
+	if len(verbs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(verbs))
+	}
+	if verbs[0] != "POST GET" {
+		t.Fatalf("request line = %q, want %q", verbs[0], "POST GET")
+	}
+}
