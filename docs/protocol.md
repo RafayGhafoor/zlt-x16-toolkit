@@ -417,3 +417,91 @@ Useful, allowed, and genuinely what "enable AT commands" means in practice:
 ./dist/zltx16 nv   -host 192.168.3.1 -shell 192.168.3.1:2233 2497
 ./dist/zltx16 nv   -host 192.168.3.1 -shell 192.168.3.1:2233 -path /nv/item_files/modem/mmode/lte_bandpref
 ```
+
+## The account tier: why AT and the hidden pages "appear" after unlocking
+
+This is the answer to "the exploit only gives a root shell, so how did AT and SMS
+become available?" They are two different things, and only one of them is a
+privilege change.
+
+### SMS is a plain config switch — never privilege-gated
+
+```
+SYS_SMS_SW = 1          # mdlcfg, and `smsSw: 1` in the cmd=80 INIT_PAGE reply
+```
+
+`cmd=12 SMS_INFO` answers `{"success":true}` at *any* tier. Nothing was unlocked
+here; this SKU ships SMS enabled.
+
+### AT is gated — by one global flag
+
+`cmd=270 SEND_AT` (the "tools → AT command" console) answers:
+
+```json
+{"success":false,"cmd":270,"message":"LIMITED_ACCESS"}
+```
+
+`authority_checkt(cmd)` in the vendor CGI decides that. It reads
+`USR_WEB_PAGE_HIDE` (a fixed bitmap that ships in the firmware) together with
+**`account_level`**, a single global runtime flag:
+
+```
+mdlcfg -o account_level      # 1 super · 2 senior · 3 ordinary web user
+```
+
+Measured on X16-OMN247 — same session, nothing else changed, alternating:
+
+| `account_level` | `cmd=270 SEND_AT` |
+|---|---|
+| 1 | `{"success":true}`, returns the IMEI |
+| 3 | `{"success":false,"message":"LIMITED_ACCESS"}` |
+| 1 | `{"success":true}` again |
+
+So it is not a per-session property at all. Every request is judged against
+whatever the flag says at that instant.
+
+Two consequences:
+
+1. **A login resets it.** `admin/admin` authenticates at level 3, so any earlier
+   elevation is undone by the next login.
+2. **A global flag can be set by anything on the box.** Which is exactly how this
+   unit got "unlocked".
+
+### What was actually changed on this unit
+
+`/tzwww/cgi-bin/http.cgi` is **not** the vendor CGI. It is a small static shim
+(468 680 B, mtime rewritten at unlock time) that, on every single request:
+
+1. writes `1/\n` to `/tmp/account_level`,
+2. runs `mdlcfg -f account_level=1`,
+3. runs `mdlcfg -c` (persist),
+4. `system("./http.cgi.bak <original cgi args>")`.
+
+The real 2 188 384 B vendor CGI sits beside it as `http.cgi.bak`. So every
+request reaches the real CGI at level 1 — and `mini_httpd` runs `cgi-bin/*`, so
+the `.bak` is itself reachable by URL (`/cgi-bin/http.cgi.bak`), which is how you
+get the *stock* behaviour for comparison.
+
+Nothing else about privilege was touched. `USR_WEB_PAGE_HIDE` is byte-identical
+to the shipped value and `/productinfo/tzcfg/main_config` still carries its
+`Jan 6 1980` mtime, i.e. it has never been rewritten since the factory image.
+
+### Reproducing the "unlocked" behaviour, and undoing it
+
+```sh
+./dist/zltx16 level -host 192.168.3.1 -shell 192.168.3.1:2233          # show tier + shim state
+./dist/zltx16 level -host 192.168.3.1 -shell 192.168.3.1:2233 -set 1   # what the AT console needs
+./dist/zltx16 level -host 192.168.3.1 -shell 192.168.3.1:2233 -set 3   # back to ordinary
+```
+
+Because a login resets the flag, a one-shot `-set 1` only lasts until the next
+login. The durable forms are (a) the shim, which re-asserts it per request, or
+(b) setting it immediately before the specific request you want elevated.
+
+| Gated by `account_level` | Not gated |
+|---|---|
+| `cmd=270 SEND_AT` (web AT console) | `cmd=172 subcmd=6` — the DMZ injection |
+| super-only menu pages | `cmd=12` SMS_INFO, `cmd=80`, `cmd=100` |
+
+That last point is worth repeating: **the root shell does not need level 1.** The
+level only buys you the restricted *web* commands. `unlock` works either way.

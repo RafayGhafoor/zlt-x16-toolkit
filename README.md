@@ -27,6 +27,7 @@ access to the target's HTTP port.
 | `info` | Read-only identity: IMEI, ICCID, IMSI, module serial, firmware |
 | `at` | AT commands via the vendor's serialised `/bin/atcmd` (writes guarded) |
 | `nv` | Read an NV item by number or EFS path (read only) |
+| `level` | Show/set `account_level` - the flag that gates the web AT console |
 
 Why this works, and the full request/response detail: [docs/protocol.md](docs/protocol.md).
 
@@ -107,7 +108,18 @@ shell. **No `/etc/shadow` edit is involved anywhere in this.**
 ./dist/zltx16 nv   -host 192.168.3.1 -shell 192.168.3.1:2233 2497
 ```
 
-Every call is wrapped in `timeout -s KILL` because `atcmd` ignores `SIGTERM` and a
+One thing that surprises people: the **web** AT console is gated by
+`account_level`, not by the shell. `cmd=270 SEND_AT` answers `LIMITED_ACCESS` at
+level 3 (where `admin/admin` logs in) and succeeds at level 1. That is the flag a
+front shim can force per request — and it is why AT "appears" after some unlocks.
+It is not needed for the root shell or for the AT work above.
+
+```bash
+./dist/zltx16 level -host 192.168.3.1 -shell 192.168.3.1:2233        # tier + shim state
+./dist/zltx16 level -host 192.168.3.1 -shell 192.168.3.1:2233 -set 1 # enable the web AT console
+```
+
+Every AT call is wrapped in `timeout -s KILL` because `atcmd` ignores `SIGTERM` and a
 plain timeout leaves the shared AT channel held. `AT+CLAC`, `AT+CFUN?` and
 `AT+CSYSSEL=?` are refused — they wedge `atcmd_daemon` for every client on this
 firmware.
